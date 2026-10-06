@@ -49,6 +49,8 @@ help: status
 	@echo "make test -- runs tests"
 	@echo "make lint -- perform linting"
 	@echo "make testdoc -- builds docs and runs local test server"
+	@echo "make serve -- serves docs locally"
+	@echo "make -j serve-live -- serves docs locally, regenerating on schema changes"
 	@echo "make deploy -- deploys site"
 	@echo "make update -- updates linkml version"
 	@echo "make help -- show this help"
@@ -103,7 +105,7 @@ gen-project-%:
 
 # Generate documentation for all schemas
 .PHONY: gendoc
-gendoc: $(SCHEMA_NAMES:%=gendoc-%) 
+gendoc: $(SCHEMA_NAMES:%=gendoc-%)
 
 gendoc-%:
 	@echo "Generating documentation for schema $*"
@@ -112,6 +114,19 @@ gendoc-%:
 	$(RUN) gen-doc --diagram-type er_diagram $(GEN_DOC_ARGS) -d $(DOCDIR)/$* src/oscem_schemas/schema/oscem_schemas_$*.yaml
 	cp $(PERMDOCS)/* $(DOCDIR)/
 
+# Run gendoc for all schemas, showing output only on failure
+gendoc-quiet:
+	@log=$$(mktemp); \
+	if $(MAKE) --no-print-directory gendoc > $$log 2>&1; then \
+		printf '\033[1;32m==> gendoc succeeded\033[0m\n'; \
+		rm -f $$log; \
+	else \
+		cat $$log; \
+		printf '\a\n\033[1;41;97m ==> gendoc FAILED (see errors above; docs may be stale) \033[0m\n\n'; \
+		rm -f $$log; \
+		exit 1; \
+	fi
+.PHONY: gendoc-quiet
 
 
 # Generate examples for all schemas
@@ -126,7 +141,7 @@ gen-examples-%:
 # Run tests for all schemas
 test-python: $(SCHEMA_NAMES:%=test-%)
 test-lint: $(SCHEMA_NAMES:%=lint-%)
-test-examples: $(SCHEMA_NAMES:%=examples-%) 
+test-examples: $(SCHEMA_NAMES:%=examples-%)
 test: test-lint test-examples
 .PHONY: test test-lint test-examples
 
@@ -139,17 +154,17 @@ test-%:
 	fi
 
 lint-%:
-	@echo "Running lint for schema $*" 
+	@echo "Running lint for schema $*"
 	$(RUN) linkml-lint --validate --all --ignore-warnings src/oscem_schemas/schema/oscem_schemas_$*.yaml; \
 
 examples-%:
-	@echo "Validating examples against schema $*"	
+	@echo "Validating examples against schema $*"
 	@if [ -f src/data/examples/example_valid_$*.yaml ]; then \
 		$(RUN) linkml-validate -s src/oscem_schemas/schema/oscem_schemas_$*.yaml src/data/examples/example_valid_$*.yaml ; \
 	else \
 		echo "No example found"; \
 	fi
-	
+
 ##		 $(RUN) python -m unittest discover; \
 
 prepare-mkdocs: $(SCHEMA_NAMES:%=prepare-mkdocs-%)
@@ -179,7 +194,7 @@ prepare-mkdocs-%:
 	@echo "repo_url: https://github.com/osc-em/oscem-schemas" >> $(DOCDIR)/$*/mkdocs.yml
 
 # Build Independent MkDocs Sites
-mkdocs-build: 
+mkdocs-build:
 	prepare-mkdocs $(SCHEMA_NAMES:%=build-%)
 
 build-test-%:
@@ -198,12 +213,19 @@ serve-test-%:
 
 serve:
 	$(RUN) mkdocs serve -f mkdocs.yml -a 0.0.0.0:8000
-# Serve All Schemas Simultaneously
-serve-all: $(SCHEMA_NAMES:%=serve-%)
+
+# Serve docs, regenerating them whenever the schema or doc sources change.
+serve-live: gendoc-quiet
+	$(RUN) watchmedo shell-command --recursive --drop \
+		--patterns='*.yaml;*.md;*.jinja2' \
+		--command='$(MAKE) --no-print-directory -j gendoc-quiet' \
+		src/oscem_schemas/schema $(SRC)/docs $(PERMDOCS) & \
+	trap "kill $$! 2>/dev/null" EXIT; \
+	$(RUN) mkdocs serve -f mkdocs.yml -a 0.0.0.0:8000
 
 
 
-.PHONY: serve prepare-mkdocs mkdocs-build serve-all serve-test build-test
+.PHONY: serve serve-live prepare-mkdocs mkdocs-build serve-all serve-test build-test
 
 MKDOCS = $(RUN) mkdocs
 mkd-%:
